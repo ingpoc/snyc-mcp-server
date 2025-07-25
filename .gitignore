@@ -13,6 +13,9 @@ dist/
 .env.local
 .env.*.local
 
+# MCP configuration (may contain sensitive data)
+.mcp.json
+
 # IDE/Editor files
 .vscode/
 .idea/
