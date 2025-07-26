@@ -1,24 +1,37 @@
 # Snyk MCP Server Setup Guide
 
+Complete setup guide for the production-ready Snyk MCP server with AI-optimized security scanning.
+
 ## Prerequisites
 
-- Snyk account with API token ([get here](https://app.snyk.io/account))
-- Snyk CLI: `npm install -g snyk`
-- Node.js 18+
+- **Snyk Account**: Free account at [snyk.io](https://snyk.io) with API token access
+- **Snyk CLI**: `npm install -g snyk` (latest version)
+- **Node.js**: Version 18+ required
+- **Claude Code**: MCP-compatible client for AI integration
 
 ## Installation
 
-1. **Install and build:**
+1. **Clone and build the server:**
    ```bash
+   git clone <repository-url>
+   cd snyk-mcp-server
    npm install
-   npm run build
+   npx tsc  # Build TypeScript
    ```
 
-2. **Get Snyk credentials:**
-   - API Token: Visit [app.snyk.io/account](https://app.snyk.io/account)
-   - Organization ID: Check your Snyk org settings (format: `john.doe`)
+2. **Install Snyk CLI globally:**
+   ```bash
+   npm install -g snyk
+   snyk --version  # Verify installation
+   ```
+
+3. **Get Snyk credentials:**
+   - **API Token**: Visit [app.snyk.io/account](https://app.snyk.io/account) → "API Token"
+   - **Organization ID**: Optional, found in Snyk org settings (format: `john.doe`)
 
 ## Configuration
+
+### MCP Server Configuration
 
 Add to your `~/.claude/.mcp.json`:
 
@@ -29,18 +42,26 @@ Add to your `~/.claude/.mcp.json`:
       "command": "node",
       "args": ["/absolute/path/to/snyk-mcp-server/build/index.js"],
       "env": {
-        "SNYK_TOKEN": "your-snyk-token-here",
-        "SNYK_ORG_ID": "your.organization.name"
+        "SNYK_TOKEN": "your-snyk-api-token-here"
       }
     }
   }
 }
 ```
 
-**Replace:**
-- Update the absolute path to your server location
-- Add your actual Snyk token and org ID
-- Restart Claude Code
+### Configuration Notes
+
+- **Path**: Use absolute path to `build/index.js`
+- **SNYK_TOKEN**: Your API token from Snyk account settings
+- **SNYK_ORG_ID**: Optional - only needed for enterprise accounts with multiple orgs
+- **Restart**: Restart Claude Code after configuration changes
+
+### Authentication Flow
+
+The server uses OAuth authentication:
+1. **API Token**: Used to initiate authentication flow
+2. **Browser OAuth**: Opens browser for user approval (first time)
+3. **Session Tokens**: Created automatically for subsequent scans
 
 ## Verification
 

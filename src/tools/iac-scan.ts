@@ -1,4 +1,5 @@
 import { executeCommand, buildSnykCommand } from '../utils/exec.js';
+import { ProjectDetector } from '../utils/project-detector.js';
 import type { SnykIacIssue, SnykConfig } from '../types/snyk.js';
 import type { SnykIacScanArgs } from '../types/mcp.js';
 
@@ -20,12 +21,21 @@ interface SnykIacScanResult {
 }
 
 export class SnykIacTool {
+  private detector = new ProjectDetector();
+  
   constructor(private config: SnykConfig) {}
 
   async scan(args: SnykIacScanArgs): Promise<SnykIacIssue[]> {
+    const scanPath = args.path || '.';
+    
+    // Check if project has IaC files before scanning
+    const detection = await this.detector.detectProject(scanPath);
+    if (!detection.hasIaC) {
+      throw new Error(`No Infrastructure as Code files found in '${scanPath}'. IaC scan requires files like Dockerfile, *.tf, *.yml, docker-compose.yml, etc. Consider using snyk_code_scan for source code or snyk_sca_scan for dependencies.`);
+    }
     const command = buildSnykCommand('iac test', [
       args.path || '.',
-      ...(args.severity ? ['--severity-threshold', args.severity] : []),
+      ...(args.severity ? [`--severity-threshold=${args.severity}`] : []),
     ], {
       org: this.config.orgId,
       json: args.json,
@@ -41,7 +51,17 @@ export class SnykIacTool {
     });
 
     if (result.exitCode !== 0 && result.exitCode !== 1) {
-      throw new Error(`Snyk IaC scan failed: ${result.stderr || result.stdout}`);
+      // Provide specific error messages for common failures
+      const errorOutput = result.stderr || result.stdout;
+      if (errorOutput.includes('No IaC files found') || errorOutput.includes('No supported files found')) {
+        throw new Error(`No supported IaC files found in '${scanPath}'. IaC scan requires Terraform (.tf), Kubernetes (.yml/.yaml), Dockerfile, or docker-compose files.`);
+      } else if (errorOutput.includes('Not authorised')) {
+        throw new Error('Authentication failed. Please run snyk_auth_status to check authentication or contact your Snyk administrator for access.');
+      } else if (errorOutput.includes('Missing option')) {
+        throw new Error(`Snyk command error: ${errorOutput}. Check scan parameters and try again.`);
+      } else {
+        throw new Error(`Snyk IaC scan failed: ${errorOutput}`);
+      }
     }
 
     if (result.stdout.includes('No issues found') || result.stdout.trim() === '') {

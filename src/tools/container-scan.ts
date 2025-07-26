@@ -36,7 +36,7 @@ export class SnykContainerTool {
   async scan(args: SnykContainerScanArgs): Promise<SnykContainerIssue[]> {
     const command = buildSnykCommand('container test', [
       args.image,
-      ...(args.severity ? ['--severity-threshold', args.severity] : []),
+      ...(args.severity ? [`--severity-threshold=${args.severity}`] : []),
     ], {
       org: this.config.orgId,
       json: args.json,

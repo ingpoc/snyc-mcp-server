@@ -1,5 +1,32 @@
 #!/usr/bin/env node
 
+/**
+ * SNYK MCP SERVER - AI ASSISTANT USAGE GUIDE
+ * 
+ * OPTIMAL WORKFLOW FOR AI ASSISTANTS:
+ * 1. NEW PROJECTS: Start with snyk_scan_recommendations to analyze project structure
+ * 2. AUTHENTICATION: Run snyk_auth_status before first scan or if auth errors occur
+ * 3. RUN RECOMMENDED SCANS based on project analysis:
+ *    - snyk_sca_scan: For dependency vulnerabilities (if dependencies found)
+ *    - snyk_code_scan: For source code security issues (if code files found)
+ *    - snyk_iac_scan: For infrastructure security (if IaC files found)
+ *    - snyk_container_scan: For Docker images (requires specific image name)
+ * 4. FOR FIXES: Always use dryRun=true first, then apply if acceptable
+ * 
+ * AUTHENTICATION TROUBLESHOOTING:
+ * - If snyk_auth_status shows authenticated=false, user needs OAuth setup
+ * - OAuth flow: MCP server opens browser, user approves, creates session tokens
+ * - Requires SNYK_TOKEN environment variable with valid API token
+ * - User must have Snyk CLI installed and accessible
+ * 
+ * COMMON SCANNING PATTERNS:
+ * - New project assessment: scan_recommendations → auth_status → recommended scans
+ * - Known project security: auth_status → sca_scan → code_scan
+ * - Pre-deployment security: auth_status → sca_scan (severity=high) → container_scan
+ * - Post-fix verification: auth_status → rescan with compareWith previous results
+ * - Infrastructure review: scan_recommendations → auth_status → iac_scan (if IaC detected)
+ */
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -17,6 +44,8 @@ import { SnykIacTool } from './tools/iac-scan.js';
 import { SnykContainerTool } from './tools/container-scan.js';
 import { SnykFixTool } from './tools/fix.js';
 import { SnykRescanTool } from './tools/rescan.js';
+import { ProjectDetector } from './utils/project-detector.js';
+import { AIOptimizedResponseFormatter } from './utils/ai-optimized-responses.js';
 import { RateLimiter, validateApiToken, validateOrgId, validateContainerImage, redactSensitiveInfo } from './utils/security.js';
 
 // Zod schemas for validation
@@ -48,10 +77,15 @@ const RescanArgsSchema = z.object({
   compareWith: z.string().optional(),
 });
 
+const ScanRecommendationsArgsSchema = z.object({
+  path: z.string().optional(),
+});
+
 class SnykMcpServer {
   private server: Server;
   private auth: SnykAuth;
   private rateLimiter: RateLimiter;
+  private projectDetector: ProjectDetector;
   private scaTool?: SnykScaTool;
   private codeTool?: SnykCodeTool;
   private iacTool?: SnykIacTool;
@@ -74,6 +108,7 @@ class SnykMcpServer {
 
     this.auth = new SnykAuth();
     this.rateLimiter = new RateLimiter(50, 60000);
+    this.projectDetector = new ProjectDetector();
     
     setInterval(() => this.rateLimiter.cleanup(), 5 * 60 * 1000);
 
@@ -86,14 +121,14 @@ class SnykMcpServer {
         tools: [
           {
             name: 'snyk_auth_status',
-            description: 'Check the current Snyk authentication status and verify credentials.',
+            description: 'CHECK AUTHENTICATION: Verify Snyk authentication status before running scans. Use this tool: 1) Before first scan in a session, 2) When scans fail with authentication errors, 3) To troubleshoot auth issues. This verifies session tokens from OAuth browser flow. If authenticated=false, user needs to complete OAuth flow (MCP opens browser automatically). Returns authentication state, username, and organization.',
             inputSchema: {
               type: 'object',
               properties: {},
               additionalProperties: false,
             },
             annotations: {
-              title: 'Authentication Status',
+              title: 'Authentication Status Check',
               readOnlyHint: true,
               destructiveHint: false,
               idempotentHint: true,
@@ -102,29 +137,29 @@ class SnykMcpServer {
           },
           {
             name: 'snyk_sca_scan',
-            description: 'Scan for open-source dependency vulnerabilities using Snyk. Analyzes package.json, requirements.txt, and other dependency files.',
+            description: 'SOFTWARE COMPOSITION ANALYSIS: Scan project dependencies for known vulnerabilities (CVEs). Use this for checking third-party packages in package.json, requirements.txt, Gemfile, etc. WORKFLOW: 1) Ensure authentication (run snyk_auth_status if first scan), 2) Navigate to project directory or provide path parameter, 3) Run this scan. Results include vulnerability details, CVSS scores, and upgrade paths. Use severity parameter to filter results (e.g., "high" for production deployments).',
             inputSchema: {
               type: 'object',
               properties: {
                 path: {
                   type: 'string',
-                  description: 'Path to scan (defaults to current directory). Must be a valid directory path.',
+                  description: 'IMPORTANT: Use absolute path for best results (e.g., "/full/path/to/project"). Relative paths like "folder/subfolder" may fail. If scanning current directory, omit this parameter entirely. Target directory must contain dependency files like package.json, requirements.txt, etc.',
                 },
                 severity: {
                   type: 'string',
                   enum: ['low', 'medium', 'high', 'critical'],
-                  description: 'Minimum severity level to report. Only vulnerabilities of this severity or higher will be included.',
+                  description: 'USAGE: "critical" (urgent fixes only), "high" (production deployments), "medium" (comprehensive scan), "low" (all issues). Default: no filter (shows all).',
                 },
                 json: {
                   type: 'boolean',
-                  description: 'Return results in JSON format for structured parsing.',
+                  description: 'Return structured JSON results (recommended). Set to true for programmatic analysis.',
                   default: true,
                 },
               },
               additionalProperties: false,
             },
             annotations: {
-              title: 'SCA Vulnerability Scan',
+              title: 'Dependency Vulnerability Scan (SCA)',
               readOnlyHint: true,
               destructiveHint: false,
               idempotentHint: true,
@@ -133,29 +168,29 @@ class SnykMcpServer {
           },
           {
             name: 'snyk_code_scan',
-            description: 'Scan source code for security vulnerabilities, code quality issues, and potential bugs using Snyk Code static analysis.',
+            description: 'STATIC CODE ANALYSIS: Scan source code for security vulnerabilities, injection flaws, and coding best practices violations. Analyzes JavaScript, TypeScript, Python, Java, and other languages. WORKFLOW: 1) Ensure authentication (run snyk_auth_status if first scan), 2) Point to directory with source code, 3) Run scan. Results include precise file locations, line numbers, severity levels, and fix examples. Use this to find issues like SQL injection, XSS, command injection, etc.',
             inputSchema: {
               type: 'object',
               properties: {
                 path: {
                   type: 'string',
-                  description: 'Path to scan (defaults to current directory). Must contain source code files.',
+                  description: 'IMPORTANT: Use absolute path for best results (e.g., "/full/path/to/code"). Relative paths may fail. Omit to scan current directory. Target must contain source code files (.js, .ts, .py, .java, etc.).',
                 },
                 severity: {
                   type: 'string',
                   enum: ['low', 'medium', 'high', 'critical'],
-                  description: 'Minimum severity level to report. Filters results by severity threshold.',
+                  description: 'Filter by minimum severity. Use "high" for critical security issues, "medium" for comprehensive review.',
                 },
                 sarif: {
                   type: 'boolean',
-                  description: 'Return results in SARIF format with detailed location information.',
+                  description: 'Return SARIF format with precise file locations and fix examples (recommended).',
                   default: true,
                 },
               },
               additionalProperties: false,
             },
             annotations: {
-              title: 'Code Security Scan',
+              title: 'Source Code Security Scan',
               readOnlyHint: true,
               destructiveHint: false,
               idempotentHint: true,
@@ -164,29 +199,29 @@ class SnykMcpServer {
           },
           {
             name: 'snyk_iac_scan',
-            description: 'Scan Infrastructure-as-Code configurations (Terraform, CloudFormation, Kubernetes, Docker) for security misconfigurations and compliance issues.',
+            description: 'INFRASTRUCTURE SECURITY: Scan Infrastructure-as-Code files for security misconfigurations and compliance violations. Supports Terraform (.tf), CloudFormation (.yml/.yaml), Kubernetes manifests, Dockerfiles, and Helm charts. USAGE: Only run if your project contains IaC files. Common issues found: exposed secrets, overly permissive policies, unencrypted storage, public access violations.',
             inputSchema: {
               type: 'object',
               properties: {
                 path: {
                   type: 'string',
-                  description: 'Path to scan (defaults to current directory). Should contain IaC files like .tf, .yaml, Dockerfile, etc.',
+                  description: 'Path to directory containing IaC files (.tf, .yaml, Dockerfile, docker-compose.yml, etc.). Will fail if no IaC files found.',
                 },
                 severity: {
                   type: 'string',
                   enum: ['low', 'medium', 'high', 'critical'],
-                  description: 'Minimum severity level to report. Filters misconfigurations by severity.',
+                  description: 'Filter misconfigurations by severity. Use "critical" for production infrastructure, "medium" for development.',
                 },
                 json: {
                   type: 'boolean',
-                  description: 'Return results in JSON format with detailed remediation guidance.',
+                  description: 'Return structured JSON with remediation guidance and policy recommendations.',
                   default: true,
                 },
               },
               additionalProperties: false,
             },
             annotations: {
-              title: 'Infrastructure as Code Scan',
+              title: 'Infrastructure Security Scan (IaC)',
               readOnlyHint: true,
               destructiveHint: false,
               idempotentHint: true,
@@ -195,23 +230,23 @@ class SnykMcpServer {
           },
           {
             name: 'snyk_container_scan',
-            description: 'Scan container images for vulnerabilities in base images and installed packages. Supports Docker images from registries.',
+            description: 'CONTAINER SECURITY: Scan Docker images for vulnerabilities in base images and installed packages. Use this for Docker images before deployment. EXAMPLES: "node:18", "nginx:latest", "myregistry.com/app:v1.0". Scans both OS packages and application dependencies within the container. Critical for production deployments to ensure secure base images.',
             inputSchema: {
               type: 'object',
               properties: {
                 image: {
                   type: 'string',
-                  description: 'Container image to scan (e.g., node:18-alpine, nginx:latest, myregistry.com/myapp:v1.0). Must be a valid image reference.',
+                  description: 'REQUIRED: Docker image name and tag. FORMAT: "name:tag" or "registry/name:tag". EXAMPLES: "node:18-alpine", "nginx:latest", "myregistry.com/myapp:v1.0". Must be pullable from Docker registry.',
                   pattern: '^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?([:/][a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?)*(:[\w][\w.-]{0,127})?(@sha256:[a-f0-9]{64})?$',
                 },
                 severity: {
                   type: 'string',
                   enum: ['low', 'medium', 'high', 'critical'],
-                  description: 'Minimum severity level to report. Filters container vulnerabilities by severity.',
+                  description: 'Filter vulnerabilities by severity. For production containers: use "high" or "critical". For development: "medium".',
                 },
                 json: {
                   type: 'boolean',
-                  description: 'Return results in JSON format with detailed vulnerability information.',
+                  description: 'Return structured JSON with vulnerability details and remediation advice.',
                   default: true,
                 },
               },
@@ -219,7 +254,7 @@ class SnykMcpServer {
               additionalProperties: false,
             },
             annotations: {
-              title: 'Container Image Scan',
+              title: 'Container Image Security Scan',
               readOnlyHint: true,
               destructiveHint: false,
               idempotentHint: true,
@@ -228,24 +263,24 @@ class SnykMcpServer {
           },
           {
             name: 'snyk_fix',
-            description: 'Apply automated fixes for vulnerabilities including dependency upgrades, patches, and configuration corrections. Use with caution in production.',
+            description: 'AUTOMATED REMEDIATION: Apply fixes for dependency vulnerabilities found in scans. Updates package versions and applies patches automatically. AI WORKFLOW: 1) Run with dryRun=true to preview fixes, 2) If fixes look safe and correct, run with dryRun=false to apply them, 3) Re-scan to verify fixes. SAFETY: Always preview first - this modifies package files and lockfiles.',
             inputSchema: {
               type: 'object',
               properties: {
                 path: {
                   type: 'string',
-                  description: 'Path to apply fixes (defaults to current directory). Must be a valid project directory.',
+                  description: 'IMPORTANT: Use absolute path for reliability (e.g., "/full/path/to/project"). Must contain dependency files. Omit to fix current directory.',
                 },
                 dryRun: {
                   type: 'boolean',
-                  description: 'Preview mode - show what would be fixed without applying changes. Recommended for safety.',
+                  description: 'SAFETY FIRST: Set to true to preview fixes without applying them. Only set to false after reviewing dry run results.',
                   default: false,
                 },
               },
               additionalProperties: false,
             },
             annotations: {
-              title: 'Automated Vulnerability Fix',
+              title: 'Automated Vulnerability Remediation (DESTRUCTIVE)',
               readOnlyHint: false,
               destructiveHint: true,
               idempotentHint: false,
@@ -254,27 +289,48 @@ class SnykMcpServer {
           },
           {
             name: 'snyk_rescan',
-            description: 'Perform comprehensive rescan across all vulnerability types (SCA, Code, IaC) and compare with previous results to track remediation progress.',
+            description: 'COMPREHENSIVE SECURITY AUDIT: Run all security scans (SCA, Code, IaC) and compare with previous results to track remediation progress. Use this for complete security assessment or after applying fixes. WORKFLOW: 1) Run individual scans first to understand issues, 2) Apply fixes, 3) Use rescan to verify improvements and track progress.',
             inputSchema: {
               type: 'object',
               properties: {
                 path: {
                   type: 'string',
-                  description: 'Path to rescan (defaults to current directory). Should contain the project to analyze.',
+                  description: 'Path to project directory for comprehensive security scanning. Should contain code, dependencies, and/or IaC files.',
                 },
                 compareWith: {
                   type: 'string',
-                  description: 'Path to previous scan results file for comparison. Shows resolved, new, and remaining issues.',
+                  description: 'Path to previous scan results file (.json) for progress tracking. Shows new, resolved, and remaining vulnerabilities.',
                 },
               },
               additionalProperties: false,
             },
             annotations: {
-              title: 'Comprehensive Rescan & Compare',
+              title: 'Comprehensive Security Rescan & Progress Tracking',
               readOnlyHint: false,
               destructiveHint: false,
               idempotentHint: false,
               openWorldHint: true,
+            },
+          },
+          {
+            name: 'snyk_scan_recommendations',
+            description: 'START HERE FOR NEW PROJECTS: Analyze project structure and recommend which Snyk scans are applicable. This is the optimal entry point for AI assistants working with unknown projects. It detects dependencies, code files, and IaC files, then provides a tailored security scanning strategy. Prevents unnecessary scan failures and guides you to the most relevant tools for comprehensive security assessment.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                path: {
+                  type: 'string',
+                  description: 'Path to project directory to analyze. Defaults to current directory.',
+                },
+              },
+              additionalProperties: false,
+            },
+            annotations: {
+              title: 'Smart Project Analysis & Scan Recommendations (START HERE)',
+              readOnlyHint: true,
+              destructiveHint: false,
+              idempotentHint: true,
+              openWorldHint: false,
             },
           },
         ],
@@ -305,13 +361,26 @@ class SnykMcpServer {
             this.ensureAuthenticated();
             const scanArgs = ScanArgsSchema.parse(args);
             const results = await this.scaTool!.scan(scanArgs);
+            const optimized = AIOptimizedResponseFormatter.formatScaScanResults(results);
+            
+            // Data integrity check
+            if (results.vulnerabilities.length !== optimized.vulnerabilities.length) {
+              console.warn(`SCA Data integrity warning: Raw vulnerabilities ${results.vulnerabilities.length} vs Formatted ${optimized.vulnerabilities.length}`);
+            }
             
             return {
               content: [{
                 type: 'text',
-                text: JSON.stringify(results, null, 2),
+                text: `Dependencies Scan: ${optimized.summary.totalIssues} vulnerabilities found (${optimized.summary.critical} critical, ${optimized.summary.high} high, ${optimized.summary.medium} medium, ${optimized.summary.low} low). ${optimized.summary.fixableBySnyk} auto-fixable via snyk_fix.`,
               }],
-              structuredContent: results,
+              structuredContent: {
+                ...optimized,
+                _dataIntegrity: {
+                  rawVulnerabilitiesCount: results.vulnerabilities.length,
+                  formattedVulnsCount: optimized.vulnerabilities.length,
+                  verified: results.vulnerabilities.length === optimized.vulnerabilities.length
+                }
+              },
             };
           }
 
@@ -319,15 +388,25 @@ class SnykMcpServer {
             this.ensureAuthenticated();
             const scanArgs = CodeScanArgsSchema.parse(args);
             const results = await this.codeTool!.scan(scanArgs);
+            const optimized = AIOptimizedResponseFormatter.formatCodeScanResults(results);
+            
+            // Data integrity check
+            if (results.length !== optimized.vulnerabilities.length) {
+              console.warn(`Data integrity warning: Raw results ${results.length} vs Formatted ${optimized.vulnerabilities.length}`);
+            }
             
             return {
               content: [{
                 type: 'text',
-                text: JSON.stringify(results, null, 2),
+                text: `Code Security Scan: ${optimized.summary.totalIssues} vulnerabilities found (${optimized.summary.critical} critical, ${optimized.summary.high} high, ${optimized.summary.medium} medium, ${optimized.summary.low} low). All require manual code fixes.`,
               }],
-              structuredContent: { 
-                results: results,
-                summary: Array.isArray(results) ? `Found ${results.length} code issues` : 'Code scan completed'
+              structuredContent: {
+                ...optimized,
+                _dataIntegrity: {
+                  rawIssuesCount: results.length,
+                  formattedVulnsCount: optimized.vulnerabilities.length,
+                  verified: results.length === optimized.vulnerabilities.length
+                }
               },
             };
           }
@@ -336,13 +415,14 @@ class SnykMcpServer {
             this.ensureAuthenticated();
             const scanArgs = ScanArgsSchema.parse(args);
             const results = await this.iacTool!.scan(scanArgs);
+            const optimized = AIOptimizedResponseFormatter.formatIacScanResults(results);
             
             return {
               content: [{
                 type: 'text',
-                text: JSON.stringify(results, null, 2),
+                text: `Infrastructure Scan: ${optimized.summary.totalIssues} misconfigurations found (${optimized.summary.critical} critical, ${optimized.summary.high} high, ${optimized.summary.medium} medium, ${optimized.summary.low} low). Configuration changes required.`,
               }],
-              structuredContent: results,
+              structuredContent: optimized,
             };
           }
 
@@ -355,13 +435,21 @@ class SnykMcpServer {
             }
 
             const results = await this.containerTool!.scan(scanArgs);
+            const optimized = AIOptimizedResponseFormatter.formatContainerScanResults(results);
             
             return {
               content: [{
                 type: 'text',
-                text: JSON.stringify(results, null, 2),
+                text: `Container Scan: ${optimized.summary.totalIssues} vulnerabilities found (${optimized.summary.critical} critical, ${optimized.summary.high} high, ${optimized.summary.medium} medium, ${optimized.summary.low} low). Container image security review required.`,
               }],
-              structuredContent: results,
+              structuredContent: {
+                ...optimized,
+                _dataIntegrity: {
+                  rawIssuesCount: results.length,
+                  formattedVulnsCount: optimized.vulnerabilities.length,
+                  verified: results.length === optimized.vulnerabilities.length
+                }
+              },
             };
           }
 
@@ -370,12 +458,22 @@ class SnykMcpServer {
             const fixArgs = FixArgsSchema.parse(args);
             const results = await this.fixTool!.fix(fixArgs);
             
+            const summary = fixArgs.dryRun 
+              ? `Fix Preview: ${results.fixes.length} dependencies can be fixed, ${results.errors.length} errors`
+              : `Fixes Applied: ${results.fixes.length} dependencies updated, ${results.errors.length} errors`;
+            
             return {
               content: [{
                 type: 'text',
-                text: JSON.stringify(results, null, 2),
+                text: summary,
               }],
-              structuredContent: results,
+              structuredContent: {
+                ...results,
+                isDryRun: fixArgs.dryRun,
+                nextStep: fixArgs.dryRun 
+                  ? 'Run snyk_fix with dryRun=false to apply these fixes'
+                  : 'Run snyk_sca_scan to verify vulnerabilities are resolved'
+              },
             };
           }
 
@@ -390,6 +488,36 @@ class SnykMcpServer {
                 text: JSON.stringify(results, null, 2),
               }],
               structuredContent: results,
+            };
+          }
+
+          case 'snyk_scan_recommendations': {
+            const scanRecommendationsArgs = ScanRecommendationsArgsSchema.parse(args);
+            const detection = await this.projectDetector.detectProject(scanRecommendationsArgs.path);
+            const recommendations = this.projectDetector.getRecommendations(detection);
+            
+            const report = {
+              projectAnalysis: {
+                path: scanRecommendationsArgs.path || '.',
+                hasDependencies: detection.hasDependencies,
+                hasCode: detection.hasCode,
+                hasIaC: detection.hasIaC,
+                dependencyFiles: detection.dependencyFiles,
+                iacFiles: detection.iacFiles.slice(0, 10), // Limit to avoid overflow
+                packageManager: detection.packageManager,
+              },
+              recommendedScans: recommendations,
+              nextSteps: recommendations.length > 0 
+                ? 'NEXT: 1) Run snyk_auth_status to verify authentication, 2) Execute recommended scans in order, 3) Address any vulnerabilities found.'
+                : 'No scannable files detected. Ensure you are in the correct project directory or try a different path.'
+            };
+            
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify(report, null, 2),
+              }],
+              structuredContent: report,
             };
           }
 
@@ -433,7 +561,7 @@ class SnykMcpServer {
 
   private ensureAuthenticated(): void {
     if (!this.auth.isAuthenticated()) {
-      throw new Error('Authentication failed during server initialization. Please check your environment variables.');
+      throw new Error('Snyk authentication required. TROUBLESHOOTING: 1) Check snyk_auth_status to see current state, 2) If not authenticated, user needs to complete OAuth flow in browser (MCP server will open browser automatically), 3) Ensure SNYK_TOKEN environment variable is set with valid API token, 4) Verify Snyk CLI is installed ("snyk --version"), 5) Check organization access permissions.');
     }
   }
 

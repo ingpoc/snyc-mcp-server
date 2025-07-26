@@ -48,6 +48,10 @@ export function buildSnykCommand(
 ): string {
   const parts = ['snyk', subcommand];
   
+  // Add all args in order (they should already be correctly formatted)
+  parts.push(...args);
+  
+  // Add options
   if (options.org) {
     parts.push('--org', options.org);
   }
@@ -59,8 +63,6 @@ export function buildSnykCommand(
   if (options.sarif) {
     parts.push('--sarif');
   }
-  
-  parts.push(...args);
   
   return parts.join(' ');
 }

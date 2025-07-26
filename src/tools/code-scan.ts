@@ -8,7 +8,7 @@ export class SnykCodeTool {
   async scan(args: SnykCodeScanArgs): Promise<SnykCodeIssue[]> {
     const command = buildSnykCommand('code test', [
       args.path || '.',
-      ...(args.severity ? ['--severity-threshold', args.severity] : []),
+      ...(args.severity ? [`--severity-threshold=${args.severity}`] : []),
     ], {
       org: this.config.orgId,
       sarif: args.sarif,
