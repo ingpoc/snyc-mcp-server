@@ -142,7 +142,7 @@ export class SnykRescanTool {
       ok: true,
       vulnerabilities: [],
       dependencyCount: 0,
-      org: this.config.orgId,
+      org: this.config.orgId || 'default',
       policy: '',
       isPrivate: true,
       licensesPolicy: null,

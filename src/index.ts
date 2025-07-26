@@ -325,7 +325,10 @@ class SnykMcpServer {
                 type: 'text',
                 text: JSON.stringify(results, null, 2),
               }],
-              structuredContent: results,
+              structuredContent: { 
+                results: results,
+                summary: Array.isArray(results) ? `Found ${results.length} code issues` : 'Code scan completed'
+              },
             };
           }
 
@@ -406,28 +409,25 @@ class SnykMcpServer {
     });
   }
 
-  private async initializeFromEnvironment(): Promise<void> {
-    const apiToken = process.env.SNYK_TOKEN || process.env.SNYK_API_TOKEN;
-    const orgId = process.env.SNYK_ORG_ID || process.env.SNYK_ORG;
+  private async initialize(options: { token?: string; orgId?: string; baseUrl?: string } = {}): Promise<void> {
+    const apiToken = options.token || process.env.SNYK_TOKEN || process.env.SNYK_API_TOKEN;
+    const orgId = options.orgId || process.env.SNYK_ORG_ID || process.env.SNYK_ORG;
+    const baseUrl = options.baseUrl || process.env.SNYK_API || process.env.SNYK_API_URL;
 
     if (!apiToken) {
-      throw new Error('SNYK_TOKEN or SNYK_API_TOKEN environment variable is required');
-    }
-
-    if (!orgId) {
-      throw new Error('SNYK_ORG_ID or SNYK_ORG environment variable is required');
+      throw new Error('API token is required. Provide it via --token argument, SNYK_TOKEN, or SNYK_API_TOKEN environment variable.');
     }
 
     if (!validateApiToken(apiToken)) {
-      throw new Error('Invalid API token format in environment variable. Token must be at least 20 characters and contain only alphanumeric characters, hyphens, and underscores.');
+      throw new Error('Invalid API token format. Token must be at least 20 characters and contain only alphanumeric characters, hyphens, and underscores.');
     }
     
-    if (!validateOrgId(orgId)) {
-      throw new Error('Invalid organization ID format in environment variable. Organization ID must be at least 3 characters and contain only alphanumeric characters, hyphens, underscores, and dots.');
+    if (orgId && !validateOrgId(orgId)) {
+      throw new Error('Invalid organization ID format. Organization ID must be at least 3 characters and contain only alphanumeric characters, hyphens, underscores, and dots.');
     }
 
     await this.auth.validateSnykCli();
-    await this.auth.authenticate(apiToken, orgId);
+    await this.auth.authenticate(apiToken, orgId, baseUrl);
     this.initializeTools();
   }
 
@@ -451,18 +451,80 @@ class SnykMcpServer {
     this.rescanTool = new SnykRescanTool(config);
   }
 
-  async run(): Promise<void> {
-    // Initialize authentication from environment variables before connecting
-    await this.initializeFromEnvironment();
+  async run(options: { token?: string; orgId?: string; baseUrl?: string } = {}): Promise<void> {
+    await this.initialize(options);
     
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
   }
 }
 
+function parseCommandLineArgs(): { token?: string; orgId?: string; baseUrl?: string } {
+  const args = process.argv.slice(2);
+  const options: { token?: string; orgId?: string; baseUrl?: string } = {};
+  
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const nextArg = args[i + 1];
+    
+    switch (arg) {
+      case '--token':
+      case '-t':
+        if (nextArg && !nextArg.startsWith('-')) {
+          options.token = nextArg;
+          i++;
+        }
+        break;
+      case '--org-id':
+      case '--org':
+      case '-o':
+        if (nextArg && !nextArg.startsWith('-')) {
+          options.orgId = nextArg;
+          i++;
+        }
+        break;
+      case '--base-url':
+      case '--api-url':
+      case '-u':
+        if (nextArg && !nextArg.startsWith('-')) {
+          options.baseUrl = nextArg;
+          i++;
+        }
+        break;
+      case '--help':
+      case '-h':
+        console.log(`
+Snyk MCP Server
+
+Usage: node build/index.js [options]
+
+Options:
+  -t, --token <token>       Snyk API token (can also use SNYK_TOKEN env var)
+  -o, --org-id <org>        Snyk organization ID (can also use SNYK_ORG_ID env var)
+  -u, --base-url <url>      Snyk API base URL (can also use SNYK_API env var)
+  -h, --help                Show this help message
+
+Environment Variables:
+  SNYK_TOKEN               Snyk API token
+  SNYK_API_TOKEN           Alternative to SNYK_TOKEN
+  SNYK_ORG_ID              Snyk organization ID
+  SNYK_ORG                 Alternative to SNYK_ORG_ID
+  SNYK_API                 Snyk API base URL
+  SNYK_API_URL             Alternative to SNYK_API
+
+Note: Command line arguments take precedence over environment variables.
+        `);
+        process.exit(0);
+    }
+  }
+  
+  return options;
+}
+
 async function main(): Promise<void> {
+  const options = parseCommandLineArgs();
   const server = new SnykMcpServer();
-  await server.run();
+  await server.run(options);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

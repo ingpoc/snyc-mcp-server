@@ -45,7 +45,7 @@ export class SnykContainerTool {
     const result = await executeCommand(command, {
       env: {
         SNYK_TOKEN: this.config.apiToken,
-        SNYK_ORG: this.config.orgId,
+        ...(this.config.orgId && { SNYK_ORG: this.config.orgId }),
         ...(this.config.baseUrl && { SNYK_API: this.config.baseUrl }),
       },
     });

@@ -31,7 +31,7 @@ export class SnykFixTool {
       cwd: args.path || process.cwd(),
       env: {
         SNYK_TOKEN: this.config.apiToken,
-        SNYK_ORG: this.config.orgId,
+        ...(this.config.orgId && { SNYK_ORG: this.config.orgId }),
         ...(this.config.baseUrl && { SNYK_API: this.config.baseUrl }),
       },
     });
@@ -65,7 +65,7 @@ export class SnykFixTool {
       cwd: path || process.cwd(),
       env: {
         SNYK_TOKEN: this.config.apiToken,
-        SNYK_ORG: this.config.orgId,
+        ...(this.config.orgId && { SNYK_ORG: this.config.orgId }),
         ...(this.config.baseUrl && { SNYK_API: this.config.baseUrl }),
       },
     });

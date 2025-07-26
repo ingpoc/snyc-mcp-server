@@ -64,4 +64,9 @@ jspm_packages/
 # Temporary folders
 tmp/
 temp/
+
+# Testing workspace
+workspace_test/
+
+# MCP configuration (contains sensitive data)
 .mcp.json

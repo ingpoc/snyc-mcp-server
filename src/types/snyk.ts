@@ -1,6 +1,6 @@
 export interface SnykConfig {
   apiToken: string;
-  orgId: string;
+  orgId?: string | undefined;
   baseUrl?: string | undefined;
 }
 

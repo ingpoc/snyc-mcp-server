@@ -10,7 +10,7 @@ export class SnykScaTool {
       args.path || '.',
       ...(args.severity ? ['--severity-threshold', args.severity] : []),
     ], {
-      org: this.config.orgId,
+      org: this.config.orgId, // buildSnykCommand handles undefined org gracefully
       json: args.json,
     });
 
@@ -18,7 +18,7 @@ export class SnykScaTool {
       cwd: args.path || process.cwd(),
       env: {
         SNYK_TOKEN: this.config.apiToken,
-        SNYK_ORG: this.config.orgId,
+        ...(this.config.orgId && { SNYK_ORG: this.config.orgId }),
         ...(this.config.baseUrl && { SNYK_API: this.config.baseUrl }),
       },
     });
@@ -36,7 +36,7 @@ export class SnykScaTool {
           ok: true,
           vulnerabilities: [],
           dependencyCount: 0,
-          org: this.config.orgId,
+          org: this.config.orgId || 'default',
           policy: '',
           isPrivate: true,
           licensesPolicy: null,
